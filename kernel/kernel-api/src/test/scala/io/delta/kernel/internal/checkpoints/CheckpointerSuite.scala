@@ -163,6 +163,45 @@ class CheckpointerSuite extends AnyFunSuite with MockFileSystemClientUtils {
   }
 
   //////////////////////////////////////////////////////////////////////////////////
+  // CheckpointMetaDataSerialized tests
+  //////////////////////////////////////////////////////////////////////////////////
+  test("CheckpointMetaDataSerialized round-trips base fields + checkpointSchema through " +
+    "toRow -> fromRow") {
+    val schemaJson =
+      """{"type":"struct","fields":[{"name":"id","type":"long","nullable":true,"metadata":{}}]}"""
+    val base = checkpointMetaData(2L, 9L, sizeInBytes = Optional.of(100L))
+    val serialized = new CheckpointMetaDataSerialized(base, Optional.of(schemaJson))
+
+    val restored = CheckpointMetaDataSerialized.fromRow(serialized.toRow())
+    assert(restored.getCheckpointMetaData.version == 2L)
+    assert(restored.getCheckpointMetaData.size == 9L)
+    assert(restored.getCheckpointMetaData.sizeInBytes == Optional.of(100L))
+    assert(restored.getCheckpointSchemaJson == Optional.of(schemaJson))
+  }
+
+  test("CheckpointMetaDataSerialized.toJson splices checkpointSchema as a JSON object") {
+    val schemaJson =
+      """{"type":"struct","fields":[{"name":"id","type":"long","nullable":true,"metadata":{}}]}"""
+    val base = checkpointMetaData(2L, 9L, checksum = Optional.of("abc"))
+    val serialized = new CheckpointMetaDataSerialized(base, Optional.of(schemaJson))
+
+    val json = serialized.toJson()
+    // Nested object, not an escaped string literal.
+    assert(json.contains("\"checkpointSchema\":{"))
+    assert(!json.contains("\"checkpointSchema\":\""))
+    assertJsonEquals(
+      s"""{"version":2,"size":9,"checksum":"abc","checkpointSchema":$schemaJson}""",
+      json)
+  }
+
+  test("CheckpointMetaDataSerialized omits checkpointSchema when absent") {
+    val base = checkpointMetaData(7L, 3L)
+    val serialized = new CheckpointMetaDataSerialized(base, Optional.empty())
+    assert(!serialized.toJson().contains("checkpointSchema"))
+    assertJsonEquals("""{"version":7,"size":3}""", serialized.toJson())
+  }
+
+  //////////////////////////////////////////////////////////////////////////////////
   // findLastCompleteCheckpointBefore tests
   //////////////////////////////////////////////////////////////////////////////////
   test("findLastCompleteCheckpointBefore - no checkpoints") {
@@ -354,7 +393,6 @@ object CheckpointerSuite extends VectorTestUtils {
         case 5 => nullVector(CheckpointMetaData.READ_SCHEMA.at(5).getDataType) // v2Checkpoint
         case 6 => stringVector(Seq(null)) // checksum
         case 7 => mapTypeVector(Seq(Map.empty[String, String])) // tags
-        case 8 => stringVector(Seq(null)) // checkpointSchema
       }
     }
 

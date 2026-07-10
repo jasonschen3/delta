@@ -38,8 +38,9 @@ import org.scalatest.funsuite.AnyFunSuite
  * projection, nested-struct/array parsing, and JSON serialization are all exercised together.
  *
  * Note: the top-level `checkpointSchema` field is a polymorphic schema-of-schema that the columnar
- * reader cannot project into a fixed schema. It is captured as raw JSON text and `toJson` splices
- * it back in as a JSON object, so it round-trips like every other field.
+ * reader cannot project. The plain `readLastCheckpointFile` path does not capture it (`toJson`
+ * reproduces every other field); `readLastCheckpointFileWithSchema` captures it as raw JSON text
+ * via `CheckpointMetaDataSerialized` and reproduces the pointer in full.
  */
 class LastCheckpointHintSuite extends AnyFunSuite {
 
@@ -52,6 +53,17 @@ class LastCheckpointHintSuite extends AnyFunSuite {
     assert(
       expectedNode == actualNode,
       s"JSON mismatch.\n expected: $expectedNode\n actual:   $actualNode")
+  }
+
+  /**
+   * Returns `json` with the top-level `checkpointSchema` field removed (kernel omits it). Works
+   * through a `java.util.Map` rather than an `ObjectNode` cast so it is agnostic to whether
+   * `JsonUtils.mapper()` returns shaded or unshaded Jackson node types.
+   */
+  private def withoutCheckpointSchema(json: String): String = {
+    val map = JsonUtils.mapper().readValue(json, classOf[java.util.LinkedHashMap[String, Object]])
+    map.remove("checkpointSchema")
+    JsonUtils.mapper().writeValueAsString(map)
   }
 
   private def logPathFor(goldenTable: String): Path =
@@ -79,18 +91,19 @@ class LastCheckpointHintSuite extends AnyFunSuite {
     assert(cpm.checksum.isPresent)
     assert(!cpm.parts.isPresent, "V2 pointer has no `parts`")
     assert(cpm.v2Checkpoint.isPresent, "V2 pointer must carry the v2Checkpoint block")
-    assert(!cpm.checkpointSchema.isPresent, "this fixture carries no checkpointSchema")
 
     val actualJson = cpm.toJson()
     assert(actualJson.contains("v2Checkpoint"))
     assert(actualJson.contains("sidecarFiles"))
     assert(actualJson.contains("nonFileActions"))
     assert(actualJson.contains("checkpointMetadata"))
-    assert(!actualJson.contains("checkpointSchema"))
     assertJsonEquals(expectedJson, actualJson)
   }
 
-  test("V2 (parquet format) pointer round-trips every field including checkpointSchema") {
+  test("V2 (parquet format) pointer round-trips every field except checkpointSchema") {
+    // The parquet-format golden also carries a top-level `checkpointSchema` (a recursive,
+    // polymorphic schema-of-schema object) that the columnar reader cannot project. Every other
+    // field must round-trip, and toJson must reproduce the blob with only checkpointSchema dropped.
     val logPath = logPathFor("v2-checkpoint-parquet")
     val rawJson = readLastCheckpoint(logPath)
 
@@ -99,21 +112,15 @@ class LastCheckpointHintSuite extends AnyFunSuite {
     assert(cpm.v2Checkpoint.isPresent)
     assert(cpm.sizeInBytes.isPresent)
     assert(cpm.numOfAddFiles.isPresent)
-    assert(cpm.checkpointSchema.isPresent, "checkpointSchema must be captured")
-
-    val parsedSchema = DataTypeJsonSerDe.deserializeStructType(cpm.checkpointSchema.get())
-    assert(parsedSchema.length() > 0, "checkpointSchema should parse to a non-empty StructType")
 
     val actualJson = cpm.toJson()
-    // Spliced back in as a JSON object, not an escaped string literal.
-    assert(actualJson.contains("\"checkpointSchema\":{"))
-    assert(!actualJson.contains("\"checkpointSchema\":\""))
-    assertJsonEquals(rawJson, actualJson)
+    assert(!actualJson.contains("checkpointSchema"), "kernel does not capture checkpointSchema")
+    assertJsonEquals(withoutCheckpointSchema(rawJson), actualJson)
   }
 
   test("classic checkpoint (no v2Checkpoint) round-trips its columnar fields") {
     // A classic (non-V2) pointer that carries a top-level `checkpointSchema` but has no
-    // `v2Checkpoint`, `parts`, or `tags`.
+    // `v2Checkpoint`, `parts`, or `tags`. The scalar fields are captured; checkpointSchema is not.
     val logPath = logPathFor("spark-variant-checkpoint")
     val raw = readLastCheckpoint(logPath)
 
@@ -125,15 +132,71 @@ class LastCheckpointHintSuite extends AnyFunSuite {
     assert(cpm.checksum == Optional.of("a8d400a03ead8a86dbb412f2a693e26e"))
     assert(!cpm.parts.isPresent, "classic pointer here has no `parts`")
     assert(!cpm.v2Checkpoint.isPresent, "classic pointer has no v2Checkpoint")
-    assert(cpm.checkpointSchema.isPresent, "checkpointSchema must be captured")
-
-    val parsedSchema = DataTypeJsonSerDe.deserializeStructType(cpm.checkpointSchema.get())
-    assert(parsedSchema.length() > 0, "checkpointSchema should parse to a non-empty StructType")
 
     val actual = cpm.toJson()
+    assert(!actual.contains("checkpointSchema"), "kernel does not capture checkpointSchema")
+    // Reproduces the pointer with only checkpointSchema dropped.
+    assertJsonEquals(withoutCheckpointSchema(raw), actual)
+  }
+
+  //////////////////////////////////////////////////////////////////////////////////
+  // readLastCheckpointFileWithSchema: also captures the raw `checkpointSchema` text
+  //////////////////////////////////////////////////////////////////////////////////
+
+  test("readLastCheckpointFileWithSchema captures checkpointSchema and round-trips the full V2 " +
+    "(parquet) pointer") {
+    // The parquet-format golden carries a top-level `checkpointSchema` (a serialized StructType).
+    // The serialized read path captures it as raw JSON text, so toJson reproduces the blob in full.
+    val logPath = logPathFor("v2-checkpoint-parquet")
+    val rawJson = readLastCheckpoint(logPath)
+
+    val serialized = new Checkpointer(logPath).readLastCheckpointFileWithSchema(engine).get()
+    // Base fields are unchanged from the plain read path.
+    assert(serialized.getCheckpointMetaData.version == 2L)
+    assert(serialized.getCheckpointMetaData.v2Checkpoint.isPresent)
+    // checkpointSchema is captured as its verbatim JSON text, and parses to a StructType.
+    assert(serialized.getCheckpointSchemaJson.isPresent, "checkpointSchema must be captured")
+    val parsedSchema =
+      DataTypeJsonSerDe.deserializeStructType(serialized.getCheckpointSchemaJson.get())
+    assert(parsedSchema.length() > 0, "checkpointSchema should parse to a non-empty StructType")
+
+    val actualJson = serialized.toJson()
+    // Spliced back in as a JSON object, not an escaped string literal.
+    assert(actualJson.contains("\"checkpointSchema\":{"))
+    assert(!actualJson.contains("\"checkpointSchema\":\""))
+    assertJsonEquals(rawJson, actualJson)
+  }
+
+  test("readLastCheckpointFileWithSchema captures checkpointSchema for a classic pointer") {
+    val logPath = logPathFor("spark-variant-checkpoint")
+    val raw = readLastCheckpoint(logPath)
+
+    val serialized = new Checkpointer(logPath).readLastCheckpointFileWithSchema(engine).get()
+    assert(serialized.getCheckpointMetaData.version == 2L)
+    assert(!serialized.getCheckpointMetaData.v2Checkpoint.isPresent)
+    assert(serialized.getCheckpointSchemaJson.isPresent, "checkpointSchema must be captured")
+    val parsedSchema =
+      DataTypeJsonSerDe.deserializeStructType(serialized.getCheckpointSchemaJson.get())
+    assert(parsedSchema.length() > 0, "checkpointSchema should parse to a non-empty StructType")
+
+    val actual = serialized.toJson()
     assert(actual.contains("\"checkpointSchema\":{"))
     assert(!actual.contains("\"checkpointSchema\":\""))
-    // Reproduces the pointer in full.
     assertJsonEquals(raw, actual)
+  }
+
+  test("readLastCheckpointFileWithSchema omits checkpointSchema when the pointer has none") {
+    // The V2 (json format) golden has no top-level checkpointSchema, so it stays empty/omitted.
+    val logPath = logPathFor("v2-checkpoint-json")
+    val expectedJson = readLastCheckpoint(logPath)
+
+    val serialized = new Checkpointer(logPath).readLastCheckpointFileWithSchema(engine).get()
+    assert(
+      !serialized.getCheckpointSchemaJson.isPresent,
+      "this fixture carries no checkpointSchema")
+
+    val actualJson = serialized.toJson()
+    assert(!actualJson.contains("checkpointSchema"))
+    assertJsonEquals(expectedJson, actualJson)
   }
 }

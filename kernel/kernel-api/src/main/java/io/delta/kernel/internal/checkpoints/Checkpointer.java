@@ -34,11 +34,13 @@ import io.delta.kernel.internal.fs.Path;
 import io.delta.kernel.internal.replay.CreateCheckpointIterator;
 import io.delta.kernel.internal.tablefeatures.TableFeatures;
 import io.delta.kernel.internal.util.*;
+import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
 import java.io.*;
 import java.nio.file.FileAlreadyExistsException;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -279,7 +281,25 @@ public class Checkpointer {
 
   /** Returns information about the most recent checkpoint. */
   public Optional<CheckpointMetaData> readLastCheckpointFile(Engine engine) {
-    return loadMetadataFromFile(engine, 0 /* tries */);
+    return loadMetadataFromFile(
+        engine, CheckpointMetaData.READ_SCHEMA, CheckpointMetaData::fromRow, 0 /* tries */);
+  }
+
+  /**
+   * Like {@link #readLastCheckpointFile}, but also captures the pointer's {@code checkpointSchema}
+   * as its verbatim JSON text (see {@link CheckpointMetaDataSerialized}). Reads the file once using
+   * the extended schema, so the parsed fields and the raw {@code checkpointSchema} come from a
+   * single, consistent read (no torn read).
+   *
+   * @param engine {@link Engine} instance to use for reading
+   * @return the serialized checkpoint metadata, or empty if the file is absent/unreadable
+   */
+  public Optional<CheckpointMetaDataSerialized> readLastCheckpointFileWithSchema(Engine engine) {
+    return loadMetadataFromFile(
+        engine,
+        CheckpointMetaDataSerialized.READ_SCHEMA,
+        CheckpointMetaDataSerialized::fromRow,
+        0 /* tries */);
   }
 
   /**
@@ -309,9 +329,12 @@ public class Checkpointer {
    * Loads the checkpoint metadata from the _last_checkpoint file.
    *
    * @param engine {@link Engine instance to use}
+   * @param readSchema schema to read the {@code _last_checkpoint} file with
+   * @param rowMapper maps the read {@link Row} to the result type
    * @param tries Number of times already tried to load the metadata before this call.
    */
-  private Optional<CheckpointMetaData> loadMetadataFromFile(Engine engine, int tries) {
+  private <T> Optional<T> loadMetadataFromFile(
+      Engine engine, StructType readSchema, Function<Row, T> rowMapper, int tries) {
     if (tries >= READ_LAST_CHECKPOINT_FILE_MAX_RETRIES) {
       // We have tried 3 times and failed. Assume the checkpoint metadata file is corrupt.
       logger.warn(
@@ -339,12 +362,12 @@ public class Checkpointer {
                       .getJsonHandler()
                       .readJsonFiles(
                           singletonCloseableIterator(lastCheckpointFile),
-                          CheckpointMetaData.READ_SCHEMA,
+                          readSchema,
                           Optional.empty()),
               "Reading the last checkpoint file as JSON")) {
         Optional<Row> checkpointRow = InternalUtils.getSingularRow(jsonIter);
         if (checkpointRow.isPresent()) {
-          return Optional.of(CheckpointMetaData.fromRow(checkpointRow.get()));
+          return Optional.of(rowMapper.apply(checkpointRow.get()));
         }
 
         // Checkpoint has no data. This is a valid case on some file systems where the
@@ -360,7 +383,7 @@ public class Checkpointer {
           Thread.currentThread().interrupt();
           return Optional.empty();
         }
-        return loadMetadataFromFile(engine, tries + 1);
+        return loadMetadataFromFile(engine, readSchema, rowMapper, tries + 1);
       }
     } catch (Exception e) {
       if (e instanceof FileNotFoundException
@@ -378,7 +401,7 @@ public class Checkpointer {
       // we can retry until max tries are exhausted. It saves latency as the alternative
       // is to list files and find the last checkpoint file. And the `_last_checkpoint`
       // file is possibly being written to.
-      return loadMetadataFromFile(engine, tries + 1);
+      return loadMetadataFromFile(engine, readSchema, rowMapper, tries + 1);
     }
   }
 }

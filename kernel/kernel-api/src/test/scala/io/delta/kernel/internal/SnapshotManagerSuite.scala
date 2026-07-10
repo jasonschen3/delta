@@ -1169,8 +1169,7 @@ class MockReadLastCheckpointFileJsonHandler(
 
         override def getColumnVector(ordinal: Int): ColumnVector = {
           // READ_SCHEMA: version, size, parts, sizeInBytes, numOfAddFiles, v2Checkpoint, checksum,
-          // tags, checkpointSchema. This classic pointer only sets version/size/parts; the rest are
-          // null/empty.
+          // tags. This classic pointer only sets version/size/parts; the rest are null/empty.
           ordinal match {
             case 0 => longVector(Seq(lastCheckpointVersion)) /* version */
             case 1 => longVector(Seq(100)) /* size */
@@ -1187,7 +1186,6 @@ class MockReadLastCheckpointFileJsonHandler(
               }
             case 6 => stringVector(Seq(null)) /* checksum */
             case 7 => mapTypeVector(Seq(Map.empty[String, String])) /* tags */
-            case 8 => stringVector(Seq(null)) /* checkpointSchema */
           }
         }
 
