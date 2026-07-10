@@ -287,9 +287,7 @@ public class Checkpointer {
 
   /**
    * Like {@link #readLastCheckpointFile}, but also captures the pointer's {@code checkpointSchema}
-   * as its verbatim JSON text (see {@link CheckpointMetaDataSerialized}). Reads the file once using
-   * the extended schema, so the parsed fields and the raw {@code checkpointSchema} come from a
-   * single, consistent read (no torn read).
+   * as its verbatim JSON text.
    *
    * @param engine {@link Engine} instance to use for reading
    * @return the serialized checkpoint metadata, or empty if the file is absent/unreadable

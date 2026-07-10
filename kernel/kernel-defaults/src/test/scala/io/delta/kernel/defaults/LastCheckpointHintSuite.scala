@@ -151,10 +151,8 @@ class LastCheckpointHintSuite extends AnyFunSuite {
     val rawJson = readLastCheckpoint(logPath)
 
     val serialized = new Checkpointer(logPath).readLastCheckpointFileWithSchema(engine).get()
-    // Base fields are unchanged from the plain read path.
     assert(serialized.getCheckpointMetaData.version == 2L)
     assert(serialized.getCheckpointMetaData.v2Checkpoint.isPresent)
-    // checkpointSchema is captured as its verbatim JSON text, and parses to a StructType.
     assert(serialized.getCheckpointSchemaJson.isPresent, "checkpointSchema must be captured")
     val parsedSchema =
       DataTypeJsonSerDe.deserializeStructType(serialized.getCheckpointSchemaJson.get())

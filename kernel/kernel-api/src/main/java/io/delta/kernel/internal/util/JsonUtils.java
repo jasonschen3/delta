@@ -55,17 +55,7 @@ public class JsonUtils {
    * JSON document (an object or array), not a JSON string literal.
    *
    * <p>A field marked with this key is handled specially by both the reader and the writer, keeping
-   * this class free of any knowledge of specific field names:
-   *
-   * <ul>
-   *   <li><b>Read</b> (e.g. {@code DefaultJsonRow}): the field's raw JSON text is captured verbatim
-   *       into the {@code String} value, rather than type-decoded. This lets a recursive,
-   *       polymorphic JSON object (which the columnar reader cannot project into a fixed schema) be
-   *       carried through as a {@code String}.
-   *   <li><b>Write</b> ({@link #rowToJson}): the {@code String} is spliced back into the output as
-   *       raw JSON via {@link JsonGenerator#writeRawValue(String)} instead of being quoted and
-   *       escaped by {@link JsonGenerator#writeString(String)}.
-   * </ul>
+   * this class free of any knowledge of specific field names.
    */
   public static final String RAW_JSON_FIELD_METADATA_KEY = "__kernel_rawJson";
 

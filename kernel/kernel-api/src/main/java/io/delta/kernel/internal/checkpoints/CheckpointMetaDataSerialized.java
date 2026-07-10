@@ -27,34 +27,26 @@ import java.math.BigDecimal;
 import java.util.Optional;
 
 /**
- * A serialized ("pass-through") view of a {@code _last_checkpoint} pointer: a parsed {@link
+ * A serialized view of a {@code _last_checkpoint} pointer: a parsed {@link
  * CheckpointMetaData} plus the pointer's {@code checkpointSchema} carried as its verbatim JSON
  * text.
  *
  * <p>This type is deliberately separate from {@link CheckpointMetaData} so that the generic,
  * widely-used {@link CheckpointMetaData} stays free of a String-typed schema field. The {@code
  * checkpointSchema} of a {@code _last_checkpoint} is a recursive, polymorphic schema-of-schema
- * object that the columnar JSON reader cannot project into a fixed schema, so it can only be
+ * object that the columnar JSON reader cannot project into a fixed schema. So, it can only be
  * obtained as raw text. Consumers that need the exact on-pointer text (e.g. re-caching the pointer
- * elsewhere) use this type; everything else keeps using {@link CheckpointMetaData}.
- *
- * <p>The {@code checkpointSchema} field is declared as a {@link StringType} carrying the raw-JSON
- * marker (see {@link JsonUtils#RAW_JSON_FIELD_METADATA_KEY}): the reader captures its exact JSON
- * text and {@link #toJson()} splices it back in unquoted, so it round-trips as a JSON object rather
- * than an escaped string. A consumer that wants the parsed type can run {@code
- * DataTypeJsonSerDe.deserializeStructType(getCheckpointSchemaJson().get())}.
+ * elsewhere) use this type.
  */
 public class CheckpointMetaDataSerialized {
 
   /**
-   * Schema used to read a {@code _last_checkpoint} pointer with its raw {@code checkpointSchema}:
-   * all of {@link CheckpointMetaData#READ_SCHEMA}'s fields, plus a marked {@code checkpointSchema}
-   * string field appended at the end.
+   * Schema used to read a {@code _last_checkpoint} pointer with its raw {@code checkpointSchema}.
    */
   public static final StructType READ_SCHEMA = buildReadSchema();
 
   private static final int CHECKPOINT_SCHEMA_ORDINAL =
-      CheckpointMetaData.READ_SCHEMA.length(); // appended after the base fields
+      CheckpointMetaData.READ_SCHEMA.length(); // the last ordinal
 
   private static StructType buildReadSchema() {
     StructType schema = new StructType();
@@ -70,9 +62,8 @@ public class CheckpointMetaDataSerialized {
 
   /**
    * Builds a {@link CheckpointMetaDataSerialized} from a {@link Row} read using {@link
-   * #READ_SCHEMA}. The base fields are delegated to {@link CheckpointMetaData#fromRow} (the
-   * extended schema is a superset with the same leading ordinals), and {@code checkpointSchema} is
-   * captured as its raw JSON text.
+   * #READ_SCHEMA}. The base fields are delegated to {@link CheckpointMetaData#fromRow} and
+   * {@code checkpointSchema} is captured as its raw JSON text.
    */
   public static CheckpointMetaDataSerialized fromRow(Row row) {
     CheckpointMetaData base = CheckpointMetaData.fromRow(row);
@@ -92,15 +83,10 @@ public class CheckpointMetaDataSerialized {
     this.checkpointSchemaJson = checkpointSchemaJson;
   }
 
-  /** The parsed columnar fields of the {@code _last_checkpoint} pointer. */
   public CheckpointMetaData getCheckpointMetaData() {
     return checkpointMetaData;
   }
 
-  /**
-   * The pointer's {@code checkpointSchema} as its verbatim JSON text (a serialized {@code
-   * StructType}), or empty when the pointer has no {@code checkpointSchema}.
-   */
   public Optional<String> getCheckpointSchemaJson() {
     return checkpointSchemaJson;
   }
